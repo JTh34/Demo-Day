@@ -1,0 +1,11 @@
+{
+    "rag": {
+        "context_recall": 0.49,
+        "faithfulness": 0.92,
+        "answer_relevancy": 0.88,
+        "context_entity_recall": 0.41
+    },
+    "rejected": {
+        "answer_relevancy": 0.0
+    }
+}
