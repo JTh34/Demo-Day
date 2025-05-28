@@ -1,34 +1,34 @@
 # PuppyCompanion - Demo Day AIE6
 
 ## Description
-Application d'assistance IA pour propriétaires de chiens, développée avec Chainlit et système RAG avancé.
+AI assistance application for dog owners, developed with Chainlit and an advanced RAG system.
 
-## Structure du Projet
+## Project Structure
 ```
-├── demoday_challenge/     # Développement et expérimentation
-├── puppycompanion-app/    # Application de production pour HuggingFace Spaces
+├── demoday_challenge/ # Development and Experimentation
+├── puppycompanion-app/ # Production Application for HuggingFace Spaces
 ```
 
-## Technologies Utilisées
-- **Chainlit**: Interface conversationnelle
-- **OpenAI**: Modèles de langage
-- **Qdrant**: Base de données vectorielle
-- **LangChain**: Framework pour applications LLM
+## Technologies Used
+- **Chainlit**: Conversational Interface
+- **OpenAI**: Language Models
+- **Qdrant**: Vector Database
+- **LangChain**: Framework for LLM Applications
 
-## Fonctionnalités
-- Assistance intelligente pour soins canins
-- Récupération de connaissances par RAG
-- Interface conversationnelle
-- Support multi-modèles d'embedding
+## Features
+- Intelligent Assistance for Canine Care
+- Knowledge Retrieval with RAG
+- Conversational Interface
+- Multi-Model Embedding Support
 
 ## Installation
 ```bash
-# Installer les dépendances
+# Install Dependencies
 pip install -e .
 
-# Lancer l'application
+# Launch the application
 chainlit run app.py
 ```
 
-## Demo Day AIE6
-Projet développé dans le cadre du Demo Day AIE6.
+## AIE6 Demo Day
+Project developed as part of the AIE6 Demo Day.
