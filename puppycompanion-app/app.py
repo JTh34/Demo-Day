@@ -58,6 +58,10 @@ global_agent = None
 initialization_completed = False
 initialization_lock = asyncio.Lock()
 
+# Session management
+active_sessions = set()
+max_sessions = 1
+session_lock = asyncio.Lock()
 
 def load_preprocessed_chunks(file_path):
     """Load preprocessed chunks from a JSON file."""
@@ -206,18 +210,30 @@ def initialize_agent_workflow(retriever):
 @cl.on_chat_start
 async def start():
     """Initialize the application at session start."""
-    global initialization_completed
+    global initialization_completed, active_sessions
     
     # Generate unique session ID
     session_id = str(uuid.uuid4())[:8]
-    cl.user_session.set("session_id", session_id)
     
-    logger.info(f"Starting chat session {session_id}")
+    # Session limitation
+    async with session_lock:
+        if len(active_sessions) >= max_sessions:
+            logger.warning(f"Session {session_id}: Maximum sessions reached ({max_sessions}), rejecting new session")
+            await cl.Message(
+                content="⚠️ Maximum number of active sessions reached. Please refresh the page and try again."
+            ).send()
+            return
+        
+        active_sessions.add(session_id)
+        logger.info(f"Session {session_id}: Accepted ({len(active_sessions)}/{max_sessions} active sessions)")
+    
+    cl.user_session.set("session_id", session_id)
     
     # Display welcome message
     await cl.Message(
-        content="""
-        ### Welcome to PuppyCompanion 🐶
+        content=f"""### Welcome to PuppyCompanion 🐶
+
+Session ID: `{session_id}`
         """
     ).send()
     
@@ -238,6 +254,9 @@ async def start():
             logger.info(f"Session {session_id}: OpenAI API key provided by user")
         else:
             await cl.Message(content="No API key provided. Unable to continue.").send()
+            # Remove session from active list
+            async with session_lock:
+                active_sessions.discard(session_id)
             return
     
     # Use lock to prevent concurrent initialization
@@ -272,6 +291,9 @@ async def start():
                 await cl.Message(
                     content=f"There was an error initializing the model: {str(e)}"
                 ).send()
+                # Remove session from active list on error
+                async with session_lock:
+                    active_sessions.discard(session_id)
         else:
             # System already initialized, use existing global agent
             logger.info(f"Session {session_id}: Using existing global components")
@@ -288,12 +310,34 @@ async def start():
                 await cl.Message(
                     content=f"There was an error creating your session: {str(e)}"
                 ).send()
+                # Remove session from active list on error
+                async with session_lock:
+                    active_sessions.discard(session_id)
+
+@cl.on_chat_end
+async def end():
+    """Clean up when session ends."""
+    global active_sessions
+    
+    session_id = cl.user_session.get("session_id", "unknown")
+    
+    async with session_lock:
+        active_sessions.discard(session_id)
+        logger.info(f"Session {session_id}: Ended ({len(active_sessions)} active sessions remaining)")
 
 @cl.on_message
 async def handle_message(message: cl.Message):
     """Handle incoming messages using the advanced agent."""
     
     session_id = cl.user_session.get("session_id", "unknown")
+    
+    # Check if session is still active
+    if session_id not in active_sessions:
+        await cl.Message(
+            content="Your session has expired. Please refresh the page to start a new session."
+        ).send()
+        return
+    
     logger.info(f"Session {session_id}: Received message: {message.content}")
     
     # Get agent from session
@@ -327,41 +371,34 @@ async def handle_message(message: cl.Message):
         # Get and send response
         response_data = await process_with_agent()
         
-        # Handle both string and dict responses from get_final_response
-        if isinstance(response_data, str):
-            # Simple string response
-            response_content = response_data
-            tool_used = "rag"  # Default assumption
-            sources = []
-        else:
-            # Dictionary response
-            response_content = response_data.get("content", response_data)
-            tool_used = response_data.get("tool_used", "rag")
-            sources = response_data.get("sources", [])
+        # The response_data is always a string from get_final_response
+        response_content = response_data
         
-        logger.info(f"Session {session_id}: Preparing response with tool: {tool_used}, sources: {sources}")
+        logger.info(f"Session {session_id}: Raw response received: {response_content[:200]}...")
         
-        # Format the source information based on the tool used
-        source_text = ""
-        if "RAG tool" in response_content:
-            # The detailed source information is already embedded in the response content
-            # We just need to clean the markers and format it properly
-            source_text = ""  # Don't add additional source text since it's already in the response
-            logger.info(f"Session {session_id}: Using detailed RAG source attribution (embedded)")
-        elif "Tavily tool" in response_content or tool_used == "tavily":
-            source_text = "\n\n[Tavily Tool - Recherche Internet]"
+        # Check if response contains detailed RAG sources (new format)
+        if "[Using RAG tool] - Based on" in response_content or "[Using RAG tool] - Basé sur" in response_content:
+            # New detailed format - sources are already embedded, just clean markers
+            cleaned_response = response_content.replace("[Using RAG tool]", "").strip()
+            logger.info(f"Session {session_id}: Using embedded detailed RAG sources")
+        elif "[Using RAG tool]" in response_content:
+            # Old format with embedded sources - clean and keep as is
+            cleaned_response = response_content.replace("[Using RAG tool]", "[RAG Tool]")
+            logger.info(f"Session {session_id}: Using embedded RAG sources (old format)")
+        elif "[Using Tavily tool]" in response_content:
+            # Tavily format
+            cleaned_response = response_content.replace("[Using Tavily tool]", "[Tavily Tool]")
             logger.info(f"Session {session_id}: Using Tavily source attribution")
-        elif tool_used == "rag":
-            # Fallback for RAG without detailed info
-            source_text = "\n\n[RAG Tool - Livre \"Puppies for Dummies\"]"
-            logger.info(f"Session {session_id}: Using fallback RAG source attribution")
+        else:
+            # Fallback - add generic RAG attribution
+            cleaned_response = response_content
+            if cleaned_response and not cleaned_response.startswith("["):
+                cleaned_response = f"{cleaned_response}"
+            logger.info(f"Session {session_id}: Using Error message")
         
-        # Clean the response content of tool markers but keep the detailed source info
-        cleaned_response = response_content.replace("[Using RAG tool]", "[RAG Tool]").replace("[Using Tavily tool]", "[Tavily Tool]")
-        
-        # Send the final response with source information
-        logger.info(f"Session {session_id}: Sending response with detailed sources")
-        await cl.Message(content=cleaned_response + source_text).send()
+        # Send the final response
+        logger.info(f"Session {session_id}: Sending response")
+        await cl.Message(content=cleaned_response).send()
         logger.info(f"Session {session_id}: Response sent successfully")
         
     except Exception as e:

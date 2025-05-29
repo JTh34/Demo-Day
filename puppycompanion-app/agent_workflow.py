@@ -149,14 +149,14 @@ class AgentWorkflow:
             # Format detailed source information
             sources_text = ""
             if sources_info:
-                sources_text = f" - Based on {total_chunks} chunk(s):\n"
+                sources_text = f"*Based on {total_chunks} chunk(s):*\n"
                 for source in sources_info:
-                    sources_text += f"  • {source['description']}\n"
+                    sources_text += f"- *Chunk {source['chunk_number']} - {source['source']} (Page: {source['page']})*\n"
             else:
-                sources_text = " - Source: Livre \"Puppies for Dummies\""
+                sources_text = "*Source: Livre \"Puppies for Dummies\"*"
             
             # Create an AI message with the response and detailed sources
-            response_message = AIMessage(content=f"[Using RAG tool]{sources_text}\n\n{rag_response}")
+            response_message = AIMessage(content=f"[Using RAG tool] - {sources_text}\n{rag_response}")
             
             # If the response is not satisfactory, prepare to use Tavily
             next_tool = "final_response" if is_satisfactory else "need_tavily"
@@ -178,29 +178,63 @@ class AgentWorkflow:
             # Call Tavily
             tavily_result = self.tavily_tool.invoke(question)
             
-            # Check if we got useful results
+            # Format the sources and prepare content for LLM
+            sources_text = ""
+            sources_content = ""
             has_useful_results = False
-            tavily_content = ""
             
-            if tavily_result:
-                tavily_content = "Internet search results:\n\n"
+            if tavily_result and len(tavily_result) > 0:
+                sources_text = f"*Based on {len(tavily_result[:3])} internet source(s):*\n"
+                
                 for i, result in enumerate(tavily_result[:3], 1):
+                    title = result.get('title', 'Unknown Source')
+                    url = result.get('url', '')
                     content = result.get('content', '')
-                    if content and len(content.strip()) > 50:  # Basic check for meaningful content
+                    
+                    if content and len(content.strip()) > 50:
                         has_useful_results = True
-                        tavily_content += f"{i}. {result.get('title', 'Source')}: {content[:200]}...\n\n"
-            else:
-                tavily_content = "No relevant results found on the Internet."
+                        # Format source in italics
+                        domain = url.split('/')[2] if url and '/' in url else 'Web'
+                        sources_text += f"- *Source {i} - {domain}: {title}*\n"
+                        # Collect content for LLM processing
+                        sources_content += f"Source {i} ({title}): {content[:300]}...\n\n"
             
-            # Create a message with the results
-            response_message = AIMessage(content=f"[Using Tavily tool] {tavily_content}")
+            if not has_useful_results:
+                # No useful results found
+                dont_know_message = AIMessage(
+                    content=f"[Using Tavily tool] - *No reliable internet sources found for this question.*\n\nI couldn't find specific information about '{question}' in my knowledge base or through online searches. This might be a specialized topic that requires expertise from professionals in the field of canine education."
+                )
+                return {
+                    "messages": [dont_know_message],
+                    "next_tool": "final_response"
+                }
             
-            # Go to "don't know" only if no useful results were found
-            next_tool = "final_response" if has_useful_results else "say_dont_know"
+            # Generate a proper response using LLM based on the sources
+            response_prompt = f"""Based on the following internet sources, provide a clear and helpful answer to the question: "{question}"
+
+            {sources_content}
+
+            Instructions:
+            - Provide a comprehensive answer based on the sources above
+            - Focus on practical, actionable information
+            - If the sources contain contradictory information, mention the different perspectives
+            - Keep the response clear and well-structured
+            - Do not mention the sources in your response (they will be displayed separately)
+            """
+            
+            try:
+                llm_response = self.final_llm.invoke([SystemMessage(content=response_prompt)])
+                generated_answer = llm_response.content
+            except Exception as e:
+                logger.error(f"Error generating Tavily response: {e}")
+                generated_answer = "I found some relevant information but couldn't process it properly."
+            
+            # Create the final formatted message
+            response_message = AIMessage(content=f"[Using Tavily tool] - {sources_text}\n{generated_answer}")
             
             return {
                 "messages": [response_message],
-                "next_tool": next_tool
+                "next_tool": "final_response"
             }
         
         # 5. Node for cases where no source has a satisfactory answer
@@ -231,13 +265,18 @@ class AgentWorkflow:
             # Take the last tool message as the main content
             tool_content = tool_responses[-1]
             
-            # Use an LLM to generate a coherent final response
+            # If the tool message already contains detailed sources, return it as-is
+            if "[Using RAG tool]" in tool_content or "[Using Tavily tool]" in tool_content:
+                # Already contains detailed sources, return as-is
+                return {"messages": [AIMessage(content=tool_content)]}
+            
+            # Use an LLM to generate a coherent final response but preserve source markers
             system_prompt = f"""Here are the search results for the dog-related question: "{original_question}"
 
             {tool_content}
 
             Formulate a clear, helpful, and concise response based ONLY on these results.
-            Remove any text like "[Using RAG tool]" or "[Using Tavily tool]" from your response.
+            IMPORTANT: If the search results start with "[Using RAG tool]" or "[Using Tavily tool]", keep these markers exactly as they are at the beginning of your response.
             If the search results contain useful information, include it in your response rather than saying "I don't know".
             Say "I don't know" only if the search results contain no useful information.
             """
@@ -304,14 +343,14 @@ class AgentWorkflow:
     
     def get_final_response(self, result):
         """ Extracts the final response from the workflow result """
-        # Find the last AI message that is not a tool result
+        # Look for messages with detailed RAG sources first
         for msg in reversed(result["messages"]):
-            if isinstance(msg, AIMessage) and not msg.content.startswith("[Using"):
+            if isinstance(msg, AIMessage) and ("[Using RAG tool]" in msg.content or "[Using Tavily tool]" in msg.content):
                 return msg.content
         
-        # Fallback: take the last AI message, whatever it is
+        # Finally, any AI message
         for msg in reversed(result["messages"]):
             if isinstance(msg, AIMessage):
-                return msg.content.replace("[Using RAG tool] ", "").replace("[Using Tavily tool] ", "")
+                return msg.content
         
         return "I couldn't generate a response."
