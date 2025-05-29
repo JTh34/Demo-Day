@@ -20,6 +20,8 @@ class AgentState(TypedDict):
     context: List[Document]
     next_tool: str
     question: str
+    retrieved_contexts: List[Document]
+    context_count: int   
 
 class AgentWorkflow:
     """Agent workflow with intelligent routing logic"""
@@ -135,15 +137,26 @@ class AgentWorkflow:
             question = state["question"]
             
             # Call the RAG tool directly
-            rag_result = self.rag_tool(question)
+            rag_result = self.rag_tool.invoke(question)
             rag_response = rag_result["messages"][0].content
             context = rag_result.get("context", [])
+            sources_info = rag_result.get("sources_info", [])
+            total_chunks = rag_result.get("total_chunks", 0)
             
             # Evaluate the quality of the response
             is_satisfactory = self.evaluate_response_quality(question, rag_response)
             
-            # Create an AI message with the response
-            response_message = AIMessage(content=f"[Using RAG tool] {rag_response}")
+            # Format detailed source information
+            sources_text = ""
+            if sources_info:
+                sources_text = f" - Based on {total_chunks} chunk(s):\n"
+                for source in sources_info:
+                    sources_text += f"  • {source['description']}\n"
+            else:
+                sources_text = " - Source: Livre \"Puppies for Dummies\""
+            
+            # Create an AI message with the response and detailed sources
+            response_message = AIMessage(content=f"[Using RAG tool]{sources_text}\n\n{rag_response}")
             
             # If the response is not satisfactory, prepare to use Tavily
             next_tool = "final_response" if is_satisfactory else "need_tavily"
@@ -151,7 +164,10 @@ class AgentWorkflow:
             return {
                 "messages": [response_message],
                 "context": context,
-                "next_tool": next_tool
+                "sources_info": sources_info,
+                "next_tool": next_tool,
+                "retrieved_contexts": context,
+                "context_count": len(context)
             }
         
         # 4. Node for using the Tavily tool
@@ -279,7 +295,9 @@ class AgentWorkflow:
             "messages": HumanMessage(content=question),
             "context": [],
             "next_tool": "",
-            "question": ""
+            "question": "",
+            "retrieved_contexts": [],
+            "context_count": 0
         })
         
         return result

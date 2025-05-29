@@ -3,6 +3,7 @@ import os
 import logging
 import time
 import uuid
+import asyncio
 from dotenv import load_dotenv
 
 # Logging configuration
@@ -49,13 +50,23 @@ logger.info(f"Checking for chunks file at {PREPROCESSED_CHUNKS_PATH}")
 if not os.path.exists(PREPROCESSED_CHUNKS_PATH):
     logger.error(f"Preprocessed chunks file not found at {PREPROCESSED_CHUNKS_PATH}")
 
-# Global variables
-agent = None
+# Global variables - Shared Qdrant client and retriever
+global_qdrant_client = None
+global_retriever = None
+global_documents = None
+global_agent = None
 initialization_completed = False
+initialization_lock = asyncio.Lock()
 
 
 def load_preprocessed_chunks(file_path):
     """Load preprocessed chunks from a JSON file."""
+    global global_documents
+    
+    if global_documents is not None:
+        logger.info("Using cached document chunks")
+        return global_documents
+        
     logger.info(f"Loading preprocessed chunks from {file_path}")
     try:
         import json
@@ -72,13 +83,21 @@ def load_preprocessed_chunks(file_path):
             documents.append(doc)
             
         logger.info(f"Loaded {len(documents)} document chunks")
+        global_documents = documents
         return documents
     except Exception as e:
         logger.error(f"Error loading preprocessed chunks: {str(e)}")
         raise
 
 def initialize_retriever(documents):
-    """Create a retriever from documents."""
+    """Create a retriever from documents using a shared Qdrant client."""
+    global global_qdrant_client, global_retriever
+    
+    # Return existing retriever if already initialized
+    if global_retriever is not None:
+        logger.info("Using existing global retriever")
+        return global_retriever
+        
     logger.info("Creating retriever from documents")
     try:
         # Use langchain_qdrant to create a vector store
@@ -89,30 +108,47 @@ def initialize_retriever(documents):
         embeddings = OpenAIEmbeddings()
         logger.info("Created OpenAI embeddings object")
         
-        # Create a unique path for each session to avoid permission issues
-        session_id = str(uuid.uuid4())
-        qdrant_path = f"/tmp/qdrant_storage_{session_id}"
-        logger.info(f"Using unique Qdrant storage path: {qdrant_path}")
+        # Create a persistent path for embeddings storage
+        qdrant_path = "./data/qdrant_storage"
+        logger.info(f"Using persistent Qdrant storage path: {qdrant_path}")
         
         # Create directory for Qdrant storage
         os.makedirs(qdrant_path, exist_ok=True)
         
-        # Use local storage
-        client = QdrantClient(path=qdrant_path)
-        logger.info("Created Qdrant client with local storage")
+        # Create or reuse global Qdrant client
+        if global_qdrant_client is None:
+            client = QdrantClient(path=qdrant_path)
+            global_qdrant_client = client
+            logger.info("Created new global Qdrant client with persistent storage")
+        else:
+            client = global_qdrant_client
+            logger.info("Using existing global Qdrant client")
+        
+        # Check if collection already exists
+        try:
+            collections = client.get_collections()
+            collection_exists = any(collection.name == "puppies" for collection in collections.collections)
+            logger.info(f"Collection 'puppies' exists: {collection_exists}")
+        except Exception as e:
+            collection_exists = False
+            logger.info(f"Could not check collections, assuming none exist: {e}")
         
         # OpenAI embeddings dimension
         embedding_dim = 1536
         
-        # Create collection
-        from qdrant_client.http import models
-        client.create_collection(
-            collection_name="puppies",
-            vectors_config=models.VectorParams(
-                size=embedding_dim,
-                distance=models.Distance.COSINE
+        # Create collection only if it doesn't exist
+        if not collection_exists:
+            from qdrant_client.http import models
+            client.create_collection(
+                collection_name="puppies",
+                vectors_config=models.VectorParams(
+                    size=embedding_dim,
+                    distance=models.Distance.COSINE
+                )
             )
-        )
+            logger.info("Created new collection 'puppies'")
+        else:
+            logger.info("Using existing collection 'puppies'")
         
         # Create vector store
         vector_store = QdrantVectorStore(
@@ -121,13 +157,19 @@ def initialize_retriever(documents):
             embedding=embeddings
         )
         
-        # Add documents
-        vector_store.add_documents(documents)
-        logger.info(f"Added {len(documents)} documents to vector store")
+        # Add documents only if collection was just created (to avoid duplicates)
+        if not collection_exists:
+            vector_store.add_documents(documents)
+            logger.info(f"Added {len(documents)} documents to vector store")
+        else:
+            logger.info("Using existing embeddings in vector store")
         
         # Create retriever
         retriever = vector_store.as_retriever(search_kwargs={"k": 5})
         logger.info("Created retriever")
+        
+        # Store global retriever
+        global_retriever = retriever
         
         return retriever
     except Exception as e:
@@ -136,6 +178,13 @@ def initialize_retriever(documents):
 
 def initialize_agent_workflow(retriever):
     """Initialize the advanced agent workflow."""
+    global global_agent
+    
+    # Return existing agent if already initialized
+    if global_agent is not None:
+        logger.info("Using existing global agent")
+        return global_agent
+        
     logger.info("Initializing advanced agent workflow")
     try:
         # Create RAG system
@@ -146,6 +195,9 @@ def initialize_agent_workflow(retriever):
         agent = AgentWorkflow(rag_tool)
         logger.info("Advanced agent workflow initialized successfully")
         
+        # Store global agent
+        global_agent = agent
+        
         return agent
     except Exception as e:
         logger.error(f"Error initializing agent workflow: {str(e)}")
@@ -154,9 +206,13 @@ def initialize_agent_workflow(retriever):
 @cl.on_chat_start
 async def start():
     """Initialize the application at session start."""
-    global agent, initialization_completed
+    global initialization_completed
     
-    logger.info("Starting chat session")
+    # Generate unique session ID
+    session_id = str(uuid.uuid4())[:8]
+    cl.user_session.set("session_id", session_id)
+    
+    logger.info(f"Starting chat session {session_id}")
     
     # Display welcome message
     await cl.Message(
@@ -179,45 +235,72 @@ async def start():
         
         if api_key:
             os.environ["OPENAI_API_KEY"] = api_key
-            logger.info("OpenAI API key provided by user")
+            logger.info(f"Session {session_id}: OpenAI API key provided by user")
         else:
             await cl.Message(content="No API key provided. Unable to continue.").send()
             return
     
-    # Initialize the model
-    await cl.Message(content="Initializing advanced agent... This might take a minute.").send()
-    
-    try:
-        # Load preprocessed chunks
-        documents = load_preprocessed_chunks(PREPROCESSED_CHUNKS_PATH)
-        
-        # Create retriever
-        retriever = initialize_retriever(documents)
-        
-        # Initialize advanced agent workflow
-        agent = initialize_agent_workflow(retriever)
-        
-        initialization_completed = True
-        
-        await cl.Message(
-            content=f"Ready to help! \nI've loaded knowledge from {len(documents)} sections of puppy expertise and can also search the web for up-to-date information."
-        ).send()
-        
-    except Exception as e:
-        logger.error(f"Error during initialization: {str(e)}")
-        await cl.Message(
-            content=f"There was an error initializing the model: {str(e)}"
-        ).send()
+    # Use lock to prevent concurrent initialization
+    async with initialization_lock:
+        # Initialize the model (only once globally)
+        if not initialization_completed:
+            logger.info(f"Session {session_id}: Starting global initialization...")
+            await cl.Message(content="Initializing advanced agent... This might take a minute.").send()
+            
+            try:
+                # Load preprocessed chunks
+                documents = load_preprocessed_chunks(PREPROCESSED_CHUNKS_PATH)
+                
+                # Create retriever (uses global shared client)
+                retriever = initialize_retriever(documents)
+                
+                # Initialize advanced agent workflow (create global shared agent)
+                agent = initialize_agent_workflow(retriever)
+                
+                # Store agent in session (same as global agent)
+                cl.user_session.set("agent", agent)
+                
+                initialization_completed = True
+                logger.info(f"Session {session_id}: Global initialization completed successfully")
+                
+                await cl.Message(
+                    content=f"Ready to help! \nI've loaded knowledge from {len(documents)} sections of puppy expertise and can also search the web for up-to-date information."
+                ).send()
+                
+            except Exception as e:
+                logger.error(f"Session {session_id}: Error during initialization: {str(e)}")
+                await cl.Message(
+                    content=f"There was an error initializing the model: {str(e)}"
+                ).send()
+        else:
+            # System already initialized, use existing global agent
+            logger.info(f"Session {session_id}: Using existing global components")
+            try:
+                agent = global_agent
+                cl.user_session.set("agent", agent)
+                
+                await cl.Message(
+                    content="Ready to help! The system is already initialized and ready to answer your questions."
+                ).send()
+                logger.info(f"Session {session_id}: Session setup completed using global components")
+            except Exception as e:
+                logger.error(f"Session {session_id}: Error creating agent for session: {str(e)}")
+                await cl.Message(
+                    content=f"There was an error creating your session: {str(e)}"
+                ).send()
 
 @cl.on_message
 async def handle_message(message: cl.Message):
     """Handle incoming messages using the advanced agent."""
-    global agent, initialization_completed
     
-    logger.info(f"Received message: {message.content}")
+    session_id = cl.user_session.get("session_id", "unknown")
+    logger.info(f"Session {session_id}: Received message: {message.content}")
+    
+    # Get agent from session
+    agent = cl.user_session.get("agent")
     
     # Check if agent is initialized
-    if not initialization_completed:
+    if not agent or not initialization_completed:
         await cl.Message(
             content="The system is not yet initialized. Please wait or restart the chat."
         ).send()
@@ -227,7 +310,7 @@ async def handle_message(message: cl.Message):
     
     # Process question with advanced agent
     try:
-        logger.info("Processing question through advanced agent workflow")
+        logger.info(f"Session {session_id}: Processing question through advanced agent workflow")
         
         # Use agent workflow to process the question
         async def process_with_agent():
@@ -244,29 +327,45 @@ async def handle_message(message: cl.Message):
         # Get and send response
         response_data = await process_with_agent()
         
-        # Format message based on the tool used
-        response_content = response_data["content"]
-        tool_used = response_data.get("tool_used")
-        sources = response_data.get("sources", [])
+        # Handle both string and dict responses from get_final_response
+        if isinstance(response_data, str):
+            # Simple string response
+            response_content = response_data
+            tool_used = "rag"  # Default assumption
+            sources = []
+        else:
+            # Dictionary response
+            response_content = response_data.get("content", response_data)
+            tool_used = response_data.get("tool_used", "rag")
+            sources = response_data.get("sources", [])
         
-        logger.info(f"Preparing response with tool: {tool_used}, sources: {sources}")
+        logger.info(f"Session {session_id}: Preparing response with tool: {tool_used}, sources: {sources}")
         
         # Format the source information based on the tool used
         source_text = ""
-        if tool_used == "rag":
-            source_text = "\n\n[RAG Tool - Response from the book \"Puppies for Dummies\"]"
-            logger.info("Using RAG source attribution")
-        elif tool_used == "tavily":
-                source_text = "\n\n[Tavily Tool - Response from the Internet]"
-                logger.info("Using generic Tavily source attribution")
+        if "RAG tool" in response_content:
+            # The detailed source information is already embedded in the response content
+            # We just need to clean the markers and format it properly
+            source_text = ""  # Don't add additional source text since it's already in the response
+            logger.info(f"Session {session_id}: Using detailed RAG source attribution (embedded)")
+        elif "Tavily tool" in response_content or tool_used == "tavily":
+            source_text = "\n\n[Tavily Tool - Recherche Internet]"
+            logger.info(f"Session {session_id}: Using Tavily source attribution")
+        elif tool_used == "rag":
+            # Fallback for RAG without detailed info
+            source_text = "\n\n[RAG Tool - Livre \"Puppies for Dummies\"]"
+            logger.info(f"Session {session_id}: Using fallback RAG source attribution")
+        
+        # Clean the response content of tool markers but keep the detailed source info
+        cleaned_response = response_content.replace("[Using RAG tool]", "[RAG Tool]").replace("[Using Tavily tool]", "[Tavily Tool]")
         
         # Send the final response with source information
-        logger.info(f"Sending response with source: {source_text}")
-        await cl.Message(content=response_content + source_text).send()
-        logger.info("Response sent successfully")
+        logger.info(f"Session {session_id}: Sending response with detailed sources")
+        await cl.Message(content=cleaned_response + source_text).send()
+        logger.info(f"Session {session_id}: Response sent successfully")
         
     except Exception as e:
-        logger.error(f"Error processing question with agent: {str(e)}")
+        logger.error(f"Session {session_id}: Error processing question with agent: {str(e)}")
         await cl.Message(
             content="I'm sorry, but an error occurred while processing your question. Please try again in a few moments."
         ).send()

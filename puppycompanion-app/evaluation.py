@@ -814,8 +814,10 @@ def evaluate_hybrid_workflow(agent_workflow, dataset, embedding_config=None):
                 
                 # Vérifier si c'est une réponse via RAG
                 if "[Using RAG tool]" in content:
-                    rag_contexts = parser.extract_contexts([msg])
-                    
+                    rag_contexts = [doc.page_content for doc in response.get("retrieved_contexts", [])]
+                    if not rag_contexts:  
+                        rag_contexts = parser.extract_contexts([msg])
+                                    
                 # Vérifier si c'est une réponse via Tavily
                 elif "[Using Tavily tool]" in content:
                     tavily_contexts = parser.extract_contexts([msg])

@@ -67,9 +67,35 @@ class RAGSystem:
         """ Processes a query and returns the response with context """
         result = self.graph_rag.invoke({"question": question})
         
+        # Format detailed source information
+        sources_info = []
+        for i, doc in enumerate(result["context"], 1):
+            metadata = doc.metadata
+            # Extract useful metadata information
+            source_name = metadata.get('source', 'Unknown')
+            page = metadata.get('page', 'N/A')
+            chapter = metadata.get('chapter', '')
+            
+            # Create a detailed source description
+            if chapter:
+                source_desc = f"Chunk {i} - {source_name} (Chapter: {chapter}, Page: {page})"
+            else:
+                source_desc = f"Chunk {i} - {source_name} (Page: {page})"
+                
+            sources_info.append({
+                'chunk_number': i,
+                'description': source_desc,
+                'source': source_name,
+                'page': page,
+                'chapter': chapter,
+                'content_preview': doc.page_content[:100] + "..." if len(doc.page_content) > 100 else doc.page_content
+            })
+        
         return {
             "response": result["response"],
-            "context": result["context"]
+            "context": result["context"],
+            "sources_info": sources_info,
+            "total_chunks": len(result["context"])
         }
     
     def create_rag_tool(self):
@@ -90,7 +116,9 @@ class RAGSystem:
             
             return {
                 "messages": [HumanMessage(content=result["response"])],
-                "context": result["context"]
+                "context": result["context"],
+                "sources_info": result["sources_info"],
+                "total_chunks": result["total_chunks"]
             }
         
         return ai_rag_tool
