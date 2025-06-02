@@ -1,0 +1,31 @@
+# FastAPI and web framework dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+websockets==12.0
+
+# Existing LangChain dependencies
+langchain-openai==0.1.0
+langchain-core==0.2.0
+langchain-community==0.2.0
+langchain-qdrant==0.1.0
+langgraph==0.1.0
+
+# Vector database and embeddings
+qdrant-client==1.8.0
+sentence-transformers==2.7.0
+
+# Web search
+tavily-python==0.3.0
+
+# Core dependencies
+python-dotenv==1.0.0
+pydantic==2.7.0
+pandas==2.2.0
+numpy==1.26.0
+scikit-learn==1.4.0
+transformers==4.40.0
+torch==2.3.0
+tiktoken==0.7.0
+
+# Additional utilities
+aiofiles==23.2.1

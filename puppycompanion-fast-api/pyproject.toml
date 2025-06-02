@@ -1,0 +1,126 @@
+[project]
+name = "puppycompanion-fastapi"
+version = "0.2.0"
+description = "PuppyCompanion - Assistant IA pour l'éducation canine avec interface FastAPI moderne"
+readme = "README.md"
+authors = [
+    {name = "jthomazo", email = "jthomazo@example.com"},
+]
+dependencies = [
+    # FastAPI et serveur web
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "websockets>=12.0",
+    "aiofiles>=23.2.1",
+    
+    # LangChain core
+    "langchain>=0.0.300",
+    "langchain-community>=0.0.16", 
+    "langchain-core>=0.1.0",
+    "langchain-openai>=0.0.5",
+    "langgraph>=0.0.17",
+    
+    # Vector databases et embeddings
+    "langchain-qdrant>=0.0.1",
+    "qdrant-client>=1.6.0",
+    "langchain-huggingface>=0.0.1",
+    "sentence-transformers>=2.7.0",
+    "transformers>=4.40.0",
+    "torch>=2.3.0",
+    
+    # APIs et recherche web
+    "openai>=1.6.0",
+    "tavily-python>=0.2.4",
+    
+    # Utilitaires core
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.7.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "tiktoken>=0.7.0",
+    
+    # Processing et évaluation
+    "ragas>=0.1.1",
+    "scikit-learn>=1.4.0",
+    "tqdm>=4.66.0",
+    
+    # Document processing (si nécessaire pour preprocessing)
+    "pymupdf>=1.22.0",
+    "pypdf>=3.15.1",
+    "unstructured>=0.11.0",
+    "pdf2image>=1.16.0",
+    "pdfminer.six>=20221105",
+    
+    # Monitoring et debug
+    "nest-asyncio>=1.5.6",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    
+    # Support images (si nécessaire)
+    "pillow>=10.0.0",
+    "pi-heif>=0.12.0",
+    "wrapt>=1.15.0",
+]
+requires-python = ">=3.9,<4.0"
+license = "MIT"
+
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "main",
+    "rag_system",
+    "agent_workflow", 
+    "embedding_models",
+]
+
+[tool.setuptools.packages.find]
+exclude = [
+    "data*", 
+    "metrics*", 
+    "venv_dev_312*", 
+    "doc*", 
+    ".venv*", 
+    "__pycache__*", 
+    "*.egg-info*",
+    "static*",
+    "backup_chainlit*"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+select = ["E", "F", "I"]
+
+[project.optional-dependencies]
+dev = [
+    "black>=23.10.0",
+    "isort>=5.12.0",
+    "mypy>=1.6.1",
+    "pytest>=7.4.3",
+    "ruff>=0.0.270",
+    "httpx>=0.25.0",  # Pour tester l'API FastAPI
+]
+
+[project.scripts]
+puppycompanion = "main:main"
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
